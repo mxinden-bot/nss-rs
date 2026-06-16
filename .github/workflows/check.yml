@@ -41,8 +41,6 @@ jobs:
   check:
     name: Run checks
     needs: toolchains
-    # TODO: Restore `environment: codecov` once GitHub supports filtering deployment messages.
-    # environment: codecov
     strategy:
       fail-fast: false
       matrix:
@@ -91,17 +89,17 @@ jobs:
           version-file: min_version.txt
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Check
-        run: |
-          # shellcheck disable=SC2086
-          cargo check $BUILD_TYPE --locked --all-targets
-
       - name: Check feature powerset
         run: |
           # shellcheck disable=SC2086
           # --locked is omitted: --no-dev-deps modifies the manifest, which can
           # require lockfile re-resolution in a workspace.
           cargo hack check $BUILD_TYPE --feature-powerset --no-dev-deps --exclude-features gecko --mutually-exclusive-features blapi,disable-encryption
+
+      - name: Build
+        run: |
+          # shellcheck disable=SC2086
+          cargo build $BUILD_TYPE --locked --all-targets
 
       - name: Run tests and determine coverage
         env:
@@ -207,6 +205,8 @@ jobs:
     # which the Ubuntu CI runners don't exercise.
     # Allow failures in merge queue in case distro NSS lags our minimum version.
     continue-on-error: ${{ github.event_name == 'merge_group' }}
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -220,6 +220,22 @@ jobs:
           - name: Arch Linux
             container: archlinux@sha256:1047e6e7878d58e4ee47e1cd6459a32fab41246b0efc4109e11b7ef16f50b14d
             install: pacman -Syu --noconfirm git nss clang pkgconf gcc curl
+          - name: Alpine
+            container: alpine@sha256:79ff19e9084a00eece421b2523fb93e22d730e2c0e525905de047e848e56d95f
+            install: apk add --no-cache git nss-dev clang-dev pkgconf gcc musl-dev curl
+            # rustup binaries are statically linked, which prevents bindgen from dlopen-ing libclang.
+            # Disabling -crt-static makes them dynamically linked.
+            rustflags: "-C target-feature=-crt-static"
+          - name: Gentoo
+            container: gentoo/stage3@sha256:ed86fc4f53b75eabefa3eb78fdf7e0db66ca0b3b2eddc4692e16d3d7df94e198
+            install: >-
+              emerge-webrsync -q &&
+              emerge -q --getbinpkg --quiet-build=y -1 llvm-core/clang dev-util/pkgconf dev-vcs/git net-misc/curl &&
+              ACCEPT_KEYWORDS="~amd64" emerge -q --getbinpkg --quiet-build=y -1 dev-libs/nss
+          - name: Slackware
+            container: aclemons/slackware@sha256:f51515e0e9073f0cbd499677c08cd219c2706d6243ad64552a5eba56f42a57fd
+            # current-full ships a complete Slackware installation including all deps
+            install: ":"
     defaults:
       run:
         shell: sh
@@ -229,33 +245,46 @@ jobs:
       - name: Install system dependencies (${{ matrix.name }})
         env:
           INSTALL: ${{ matrix.install }}
-        run: $INSTALL
+        run: sh -ec "$INSTALL"
 
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
 
+      - name: Set LIBCLANG_PATH (Gentoo)
+        if: matrix.name == 'Gentoo'
+        run: |
+          CLANG_LIB=$(find /usr/lib/llvm /usr/lib64/llvm -name 'libclang.so' 2>/dev/null | head -1)
+          if [ -n "$CLANG_LIB" ]; then
+            echo "LIBCLANG_PATH=$(dirname "$CLANG_LIB")" >> "$GITHUB_ENV"
+          fi
+
       - name: Install Rust
-        run: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain stable --profile minimal -y
+        run: |
+          if command -v rustup > /dev/null 2>&1; then
+            rustup toolchain install stable --profile minimal
+            rustup default stable
+          else
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain stable --profile minimal -y
+          fi
+          mkdir -p "$HOME/.cargo"
+          [ -f "$HOME/.cargo/env" ] || touch "$HOME/.cargo/env"
 
-      - name: Check
+      - name: Build
         run: |
           . "$HOME/.cargo/env"
-          cargo check --locked --all-targets
+          cargo build --locked --all-targets
 
-      - name: Check feature powerset
+      - name: Build feature powerset
         run: |
           . "$HOME/.cargo/env"
-          cargo install cargo-hack --locked
-          # --locked is omitted: --no-dev-deps modifies the manifest, which can
-          # require lockfile re-resolution.
-          cargo hack check --feature-powerset --no-dev-deps --exclude-features gecko --mutually-exclusive-features blapi,disable-encryption
+          curl --proto '=https' --tlsv1.2 -sSfL https://github.com/cargo-bins/cargo-binstall/releases/latest/download/cargo-binstall-x86_64-unknown-linux-musl.tgz | tar -xzf - -C "$HOME/.cargo/bin"
+          cargo binstall --no-confirm cargo-hack
+          cargo hack build --feature-powerset --no-dev-deps --exclude-features gecko --mutually-exclusive-features blapi,disable-encryption
 
   check-vm:
     name: Run checks for VM-only platforms
     runs-on: ubuntu-24.04
-    # TODO: Restore `environment: codecov` once GitHub supports filtering deployment messages.
-    # environment: codecov
     # OpenBSD, NetBSD and Solaris often have NSS packages that are too old.
     # Allow them to fail without aborting the merge queue.
     continue-on-error: ${{ github.event_name == 'merge_group' && matrix.os != 'freebsd' }}
