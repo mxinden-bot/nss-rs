@@ -33,7 +33,7 @@ runs:
       with:
         working-directory: ${{ inputs.working-directory }}
 
-    - uses: mozilla/actions/nss@dbead646641c6d53d4d6f98beeb69f8fdec65513 # v2.0.4
+    - uses: mxinden-bot/actions/nss@6817cd14c073e2bd1e80f9f8cf904686ff780784 # FORK-TEST: i686 NSS build
       with:
         minimum-version: ${{ steps.meta.outputs.min-version }}
         sha256: ${{ steps.meta.outputs.sha256 }}

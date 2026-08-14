@@ -1,0 +1,45 @@
+name: "Cross-compilation checks"
+description: "Cross-compile nss-rs and its tests for a non-host Linux target."
+
+inputs:
+  target:
+    description: "Rust target to build for, e.g. i686-unknown-linux-gnu."
+    required: true
+  working-directory:
+    description: "Working directory."
+    default: "."
+  github-token:
+    description: "A Github PAT"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install 32-bit host toolchain
+      if: ${{ startsWith(inputs.target, 'i686-') }}
+      shell: bash
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        [ "$APT_UPDATED" ] || sudo apt-get update && echo "APT_UPDATED=1" >> "$GITHUB_ENV"
+        sudo apt-get install -y --no-install-recommends gcc-multilib g++-multilib
+
+    - uses: mozilla/actions/rust@dbead646641c6d53d4d6f98beeb69f8fdec65513 # v2.0.4
+      with:
+        version: stable
+        targets: ${{ inputs.target }}
+        tools: cargo-hack
+        token: ${{ inputs.github-token }}
+        rust-cache: false
+
+    - uses: ./install-nss
+      with:
+        target: ${{ inputs.target }}
+        token: ${{ inputs.github-token }}
+
+    - name: Compile tests (no-run)
+      shell: bash
+      env:
+        TARGET: ${{ inputs.target }}
+        WD: ${{ inputs.working-directory }}
+      run: cd "$WD" && cargo hack --feature-powerset --exclude-features gecko,blapi test --no-run --target "$TARGET"
